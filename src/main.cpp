@@ -38,14 +38,16 @@ double wrap_lambda(unsigned n, const double* x, double* grad, void* data)
 
 int main()
 {
-    nlopt::opt opt(nlopt::LD_MMA, 2);
+    nlopt::opt opt(nlopt::LN_SBPLX, 2);
 
-    std::vector<double> lower_bounds{std::numeric_limits<double>::lowest(), 0};
+    std::vector<double> lower_bounds{-5, 0};
+    std::vector<double> upper_bounds{5, 10};
 
     opt.set_lower_bounds(lower_bounds);
+    opt.set_upper_bounds(upper_bounds);
 
     int count {};
-    auto my_l_func = [&count](unsigned n, const double* x, double* grad) mutable {
+    auto my_l_func = [&count](unsigned n, const double* x, double* grad) {
         ++count;
         if (grad) {
             grad[0] = 0.0;
@@ -57,14 +59,15 @@ int main()
     opt.set_min_objective(wrap_lambda<decltype(my_l_func)>, &my_l_func);
 
     auto cd = std::vector<my_constraint_data>{{2.0, 0}, {-1, 1}};
-    opt.add_inequality_constraint(my_constraint, &cd[0], 1e-8);
-    opt.add_inequality_constraint(my_constraint, &cd[1], 1e-8);
+    //opt.add_inequality_constraint(my_constraint, &cd[0], 1e-8);
+    //opt.add_inequality_constraint(my_constraint, &cd[1], 1e-8);
 
-    opt.set_xtol_rel(1e-4);
+    opt.set_xtol_rel(1e-5);
+    //opt.set_xtol_abs(1e-6);
 
     auto x = std::vector{1.234, 5.678};
     double minf;
 
     auto result = opt.optimize(x, minf);
-    fmt::print("found minimum in {} evaluations at f({}, {}) = {}\n", count, x[0], x[1], minf);
+    fmt::print("found minimum in {} evaluations at f({}, {}) = {}\n", opt.get_numevals(), x[0], x[1], minf);
 }

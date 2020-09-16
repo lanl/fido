@@ -17,3 +17,16 @@ Say our optimization requires $N$ objective functions $\{O_0, O_1, \ldots,O_{N-1
 This suggests that each objective function should own or be associated with it's various contexts.  If we assume that they are not too large (or too numerous) then they can all be pre-allocated in the context.  That could also be a per-wrapper decision but makes sense for `shoccs`.
 
 Either way, there will need to be an `update_context` function.  In the pre-allocated case, it will only need $\Delta^q_{i,k}$.  In the other, it will need $(C_i, \Delta^q_{i,k})$
+
+To be used here, the solver must supply the following api:
+
+```c
+// Returns a solver context that will be used to run the simulations
+void* objective_init(char* input_characters);
+
+// Run a simulation with the given context and choice for objective variables
+double objective_run(void* context, const double* x);
+
+// destroy the solver context - only called at the end of the simulation
+void objective_destroy(void* context);
+```
