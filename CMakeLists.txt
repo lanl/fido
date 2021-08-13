@@ -10,6 +10,7 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 find_package(NLopt REQUIRED)
 find_package(fmt REQUIRED)
+find_package(shoccs REQUIRED)
 
 include(GNUInstallDirs)
 
