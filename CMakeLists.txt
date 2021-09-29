@@ -15,7 +15,7 @@ target_include_directories(lua INTERFACE ${LUA_INCLUDE_DIR})
 target_link_libraries(lua INTERFACE ${LUA_LIBRARIES})
 
 find_package(NLopt REQUIRED)
-find_package(fmt REQUIRED)
+find_package(fmt 8 REQUIRED)
 find_package(shoccs REQUIRED)
 
 # include(CMakeFindDependencyMacro)
@@ -23,7 +23,7 @@ find_package(shoccs REQUIRED)
 find_package(sol2 REQUIRED)
 find_package(range-v3 REQUIRED)
 find_package(pugixml 1.10 REQUIRED)
-find_package(spdlog REQUIRED)
+find_package(spdlog 1.9 REQUIRED)
 find_package(cxxopts REQUIRED)
 find_package(Boost REQUIRED) # for header only mp11
 find_package(MKL REQUIRED)

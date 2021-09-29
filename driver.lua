@@ -2,6 +2,7 @@ local inspect = require "inspect"
 
 local eigenvalue_base = {
     {
+        logging = false,
         mesh = {
             index_extents = {21},
             domain_bounds = {1}
@@ -75,24 +76,23 @@ Constraints = {
             1,
             "psi"
         ),
-        set_values = function(lst)
+        set_values = function(i, lst)
             assert(#lst >= 9)
-            for _, t in ipairs(Constraints[1].simulations) do
-                for i = 1, 6 do
-                    t.scheme.floating_alpha[i] = lst[i]
-                end
-                for i = 1, 3 do
-                    t.scheme.dirichlet_alpha[i] = lst[i + 6]
-                end
+            local s = Constraints[1].simulations[i].scheme
+            for j = 1, 6 do
+                s.floating_alpha[j] = lst[j]
+            end
+            for j = 1, 3 do
+                s.dirichlet_alpha[j] = lst[j + 6]
             end
         end,
-        set_result = function(i, lst)
-            Constraints[1].simulations[i].result = lst[1]
+        result = function(lst)
+            return lst[1]
         end,
-        aggregate_result = function()
+        aggregate = function(lst)
             local result = -math.huge
-            for _, v in ipairs(Constraints[1].simulations) do
-                result = math.max(result, v.result)
+            for _, v in ipairs(lst) do
+                result = math.max(result, v)
             end
             return result
         end,
@@ -103,6 +103,7 @@ Constraints = {
 }
 
 Simulation = {
+    logging = false,
     mesh = {
         index_extents = {51},
         domain_bounds = {2}

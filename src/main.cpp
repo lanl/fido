@@ -15,9 +15,58 @@
 
 #include <spdlog/spdlog.h>
 
+/*
+  Run a list of constraints from a sol::table with the following format
+
+  {
+    -- array of all the simulations to run as part of this constraint
+        simulations = {},
+    -- sets appropriate values in simulation table index
+        set_values = function (span<double>) end,
+    -- returns the appropriate real value from the simulation result
+        result = function (real3) return real; end
+    -- aggregrates all the results
+        aggregate = function (span<double>) return real; end
+}
+*/
+struct constraint_runner {
+    sol::table sims;
+    std::vector<double> results;
+    sol::function set_values;
+    sol::function result;
+    sol::function agg;
+
+    constraint_runner() = default;
+    constraint_runner(const sol::table& t)
+        : sims{t["simulations"]},
+          results(sims.size()),
+          set_values{t["set_values"]},
+          result{t["result"]},
+          agg{t["aggregate"]}
+    {
+    }
+
+    double operator()(std::span<const double> p)
+    {
+        for (int i = 0; i < (int)results.size(); i++) {
+            set_values(i + 1, p);
+            auto r = ccs::simulation_run(sims[i + 1]);
+            assert(r);
+            results[i] = result(*r);
+        }
+
+        return agg(results);
+    }
+};
+
 double objective(unsigned n, const double* x, double*, void* data)
 {
     sol::table& tbl = *reinterpret_cast<sol::table*>(data);
+
+    {
+        auto rng = std::span<const double>(x, n);
+        spdlog::info("running objective with params: {}", fmt::join(rng, ", "));
+    }
 
     double max_time = tbl["step_controller"]["max_time"];
     for (unsigned i = 0; i < n; i++) { tbl["scheme"]["alpha"][i + 1] = x[i]; }
@@ -38,19 +87,11 @@ double objective(unsigned n, const double* x, double*, void* data)
 
 double constraint(unsigned n, const double* x, double*, void* data)
 {
-    sol::table& t = *reinterpret_cast<sol::table*>(data);
+    constraint_runner& runner = *reinterpret_cast<constraint_runner*>(data);
 
     std::span<const double> params{x, n};
-    t["set_values"](params);
 
-    for (int i = 1; t["simulations"][i].valid(); i++) {
-        t["debug"](i);
-        auto result = ccs::simulation_run(t["simulations"][i]);
-        assert(result);
-        t["set_result"](i, *result);
-    }
-
-    return t["aggregate_result"]();
+    return runner(params);
 }
 
 int main(int argc, char* argv[])
@@ -114,13 +155,14 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    sol::table constraints = lua["Constraints"][1];
-    opt.add_inequality_constraint(constraint, &constraints, 0.0);
+    sol::table t = lua["Constraints"][1];
+    constraint_runner runner{t};
+    opt.add_inequality_constraint(constraint, &runner, 0.0);
     // opt.add_inequality_constraint(my_constraint, &cd[1], 1e-8);
 
     opt.set_xtol_rel(1e-5);
     opt.set_xtol_abs(1e-8);
-    opt.set_maxeval(20);
+    opt.set_maxeval(50);
     opt.set_initial_step(0.1);
 
     auto x = std::vector(9, 0.0);
