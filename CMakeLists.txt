@@ -17,6 +17,7 @@ target_link_libraries(lua INTERFACE ${LUA_LIBRARIES})
 find_package(NLopt REQUIRED)
 find_package(fmt 8 REQUIRED)
 find_package(shoccs REQUIRED)
+find_package(cppcoro REQUIRED)
 
 # include(CMakeFindDependencyMacro)
 # find_dependency(shoccs)
