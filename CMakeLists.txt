@@ -28,6 +28,7 @@ find_package(spdlog 1.9 REQUIRED)
 find_package(cxxopts REQUIRED)
 find_package(Boost REQUIRED) # for header only mp11
 find_package(MKL REQUIRED)
+find_package(MPI REQUIRED)
 
 include(GNUInstallDirs)
 
