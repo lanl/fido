@@ -1,57 +1,153 @@
 #include <cmath>
+#include <legion.h>
+#include <nlopt.hpp>
 
-#include <cstdio>
-#include <filesystem>
-
-#include <functional>
-#include <limits>
-
-#include <sol/sol.hpp>
-#include <span>
-#include <spdlog/common.h>
-#include <string>
 #include <vector>
 
-#include <cxxopts.hpp>
+#include <filesystem>
+#include <fstream>
+#include <sol/sol.hpp>
 
-#include <mpi.h>
-
-#include "distributed_runner.hpp"
-#include "mpi_context.hpp"
-#include "mpi_singleton_wrapper.hpp"
+/*
+ * Some thoughts on moving our custom mpi/coroutine systems to a Legion task based
+ * model The top level task would have to: parse input, spawn the tasks that will
+ * initialize nlopt
+ *
+ * the nlopt tasks should spawn other tasks from calls to the objective function
+ * nlopt would only need to be run as a single task but should then spawn other tasks
+ * using the data from nlopt (i.e. alpha, )
+ *
+ * combining the results of the objective function evaluations should be a reduction
+ * task
+ *
+ * Some thoughts input abstractions.
+ *
+ * 1. A main input serialize routine that can be used to launch multiple independent
+ * NLOPT_TASKs
+ * 2. Within a NLOPT_TASK, need to construct an nlopt::opt from the serialized input and
+ * call opt.optimize
+ * 3. That call will dispatch to an objective function which will need access to the
+ * serialized input inorder to create create an index space corresponding to the different
+ * classes of simulations.  An index lauch here with serialized input chunks corresponding
+ * to the simulation classes.  From there, we create another index space corresponding to
+ * the simulations to be carried out for each class of simulations. So we need something
+ * like `serialize_whole_input`, `serialize_simulation_classes`, `serialize_simulation
+ * input`
+ *
+ */
 
 namespace fs = std::filesystem;
 
-/* Process the input file by having the root process slurp the file and broadcast the
- * contents to the other processes.  Returns the lua state resulting from running the
- * input file */
-sol::state slurp_input_file(const fido::mpi_context& ctx, std::string filename)
+using namespace Legion;
+
+Logger log_fido("fido");
+
+enum TaskIDs {
+    TOP_LEVEL_TASK_ID,
+    TOP_LEVEL_NLOPT_TASK_ID,
+};
+
+void top_level_task(const Task* task,
+                    const std::vector<PhysicalRegion>& regions,
+                    Context ctx,
+                    Runtime* runtime)
 {
+    log_fido.print("top_level...");
+    // parse input and decide how many nlopt tasks to file up
+    int n = 1;
 
-    int sz;
-    if (ctx.root()) sz = fs::file_size(filename);
-    ctx.Bcast(sz);
-    char* buf = new char[sz + 1];
+    auto sz = fs::file_size("input.lua");
+    auto total_sz = sz + sizeof(int) + 1;
+    void* task_buf = new char[total_sz];
+    char* file_buf = (char*)(task_buf) + sizeof(int);
+    std::ifstream is{"input.lua"};
+    is.read(file_buf, sz);
+    file_buf[sz] = '\0';
 
-    if (ctx.root()) {
-        FILE* f = fopen(filename.c_str(), "r");
-        fread(buf, 1, sz, f);
-        fclose(f);
-        buf[sz] = 0;
+    // fire off a bunch of top-level-nlopt tasks
+    for (int i = 0; i < n; i++) {
+        *((int*)task_buf) = i;
+        TaskLauncher l(TOP_LEVEL_NLOPT_TASK_ID, TaskArgument(task_buf, total_sz));
+        runtime->execute_task(ctx, l);
     }
-    ctx.Bcast(buf, sz + 1);
-    std::string context{std::move(buf)};
+}
 
-    sol::state lua;
+struct my_constraint_data {
+    double a, b;
+};
+
+double myfunc(unsigned n, const double* x, double* grad, void* my_func_data)
+{
+    if (grad) {
+        grad[0] = 0.0;
+        grad[1] = 0.5 / std::sqrt(x[1]);
+    }
+
+    return std::sqrt(x[1]);
+}
+
+double my_constraint(unsigned n, const double* x, double* grad, void* data)
+{
+    my_constraint_data& d = *(my_constraint_data*)data;
+    auto&& [a, b] = d;
+
+    if (grad) {
+        grad[0] = 3 * a * (a * x[0] + b) * (a * x[0] + b);
+        grad[1] = -1;
+    }
+    return (a * x[0] + b) * (a * x[0] + b) * (a * x[0] + b) - x[1];
+}
+
+void top_level_nlopt_task(const Task* task,
+                          const std::vector<PhysicalRegion>& regions,
+                          Context ctx,
+                          Runtime* runtime)
+{
+    // assert(task->arglen == sizeof(int));
+    int n = *(const int*)task->args;
+    const char* buf = (const char*)task->args + sizeof(int);
+    log_fido.print("top-level-nlopt task %d", n);
+
+    sol::state lua{};
     lua.open_libraries(
         sol::lib::base, sol::lib::string, sol::lib::package, sol::lib::math);
-    lua.script(context);
+    lua.safe_script(buf);
 
-    assert(lua["NLopt"].valid());
-    assert(lua["Constraints"].valid());
-    assert(lua["Simulations"].valid());
+    // would this be the right place to "serialize" the input (maybe into a bunch of json
+    // strings) which could be passed as an extra argument to the nlopt optimize function.
+    // That function would then create the index spaces and do a bunch of index launches
+    // for the simulation runs.  The results of the simulations would be processed via a
+    // reduction task.  And those would be further processed via reduction
+    // Each index space with a series of input parameters would also need a corresponding
+    // output region.  There would need to be some kind of non-overlapping way of doing
+    // the output region
 
-    return lua;
+    // initialize nlopt options
+
+    std::vector<double> lb = {-HUGE_VAL, 0}; /* lower bounds */
+    nlopt::opt opt{nlopt::LD_MMA, 2};
+    opt.set_lower_bounds(lb);
+    opt.set_min_objective(myfunc, NULL);
+    std::vector<my_constraint_data> d{{2, 0}, {-1, 1}};
+    opt.add_inequality_constraint(my_constraint, &d[0], 1.0e-8);
+    opt.add_inequality_constraint(my_constraint, &d[1], 1.0e-8);
+    opt.set_xtol_rel(1e-4);
+
+    std::vector x = {1.234, 5.678};
+    double maxval;
+
+    auto opt_res = opt.optimize(x, maxval);
+
+    log_fido.print("task %d found maximum in %d evaluations at f(%g, %g) = %g",
+                   n,
+                   opt.get_numevals(),
+                   x[0],
+                   x[1],
+                   maxval);
+
+    // call nlopt.optimize
+    // thee objective we pass to nlopt will launch a bunch of other tasks
+    // when we are done optimizing, recursively launch this task
 }
 
 // double objective(unsigned n, const double* x, double*, void* data)
@@ -82,104 +178,17 @@ sol::state slurp_input_file(const fido::mpi_context& ctx, std::string filename)
 
 int main(int argc, char* argv[])
 {
-    fido::mpi_global_env env{argc, argv};
-
-    cxxopts::Options options("fido", "Run the finite-difference optimizer a given input");
-
-    // clang-format off
-    options.add_options()
-        ("input-file", "Main lua input file", cxxopts::value<std::string>())
-        ("help", "Print usage");
-    // clang-format on
-    options.parse_positional("input-file");
-
-    auto result = options.parse(argc, argv);
-
-    fido::mpi_context ctx{};
-    auto logger = ctx.root_logger("root");
-
-    if (result.count("help") || result.arguments().size() == 0) {
-        logger(spdlog::level::info, "\n{}\n", options.help());
-        return 0;
-    }
-
-    if (!result.count("input-file")) {
-        logger(spdlog::level::err, "input file must be specified");
-        return 1;
-    }
-
-    sol::state lua = slurp_input_file(ctx, result["input-file"].as<std::string>());
-
-    if (!lua["Simulations"].valid()) {
-        logger(spdlog::level::err, "top level `Simulations` table must be specified");
-        return 1;
-    }
-
-    if (sol::table t = lua["Simulations"]; t.size() == 0) {
-        logger(spdlog::level::err, "top level `Simulations` must not be empty");
-        return 1;
-    }
-
-    if (!lua["Constraints"].valid()) {
-        logger(spdlog::level::err, "top level `Constraints` table must be specified");
-        return 1;
-    }
-
-    if (sol::table t = lua["Constraints"]; t.size() == 0) {
-        logger(spdlog::level::err, "top level `Constraints` table must not be empty");
-        return 1;
-    }
-
-    // hardcode one instance of Simulations/Constraints for now.  Need to generalize to
-    // more
-    sol::table opt = lua["NLopt"];
-    sol::table sim = lua["Simulations"][1];
-    sol::table cons = lua["Constraints"][1];
+    Runtime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
     {
-        int dims = opt["dims"];
-        logger(spdlog::level::info, "dims = {}\n", dims);
+        TaskVariantRegistrar r(TOP_LEVEL_TASK_ID, "top_level");
+        r.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        Runtime::preregister_task_variant<top_level_task>(r, "top_level");
     }
-    fido::distributed_runner dr{ctx, opt, sim, cons};
-
-    auto res = dr.run();
-    if (!res) {
-        logger(spdlog::level::err, "runner failed");
-        return 1;
+    {
+        TaskVariantRegistrar r(TOP_LEVEL_NLOPT_TASK_ID, "top_level_nlopt");
+        r.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        Runtime::preregister_task_variant<top_level_nlopt_task>(r, "top_level_nlopt");
     }
 
-    auto [num_evals, max_val, x] = *res;
-
-    logger(spdlog::level::info,
-           "found maximum in {} evaluations at f({}) = {}\n",
-           num_evals,
-           fmt::join(x, ", "),
-           max_val);
-
-    // if (ctx.root()) {
-    //     sol::table tbl = lua["Simulation"];
-
-    //     nlopt::opt opt(nlopt::LN_COBYLA, 9);
-
-    //     opt.set_max_objective(objective, &tbl);
-
-    //     sol::table t = lua["Constraints"][1];
-    //     constraint_runner runner{t};
-    //     opt.add_inequality_constraint(constraint, &runner, 0.0);
-
-    //     opt.set_xtol_rel(1e-5);
-    //     opt.set_xtol_abs(1e-8);
-    //     opt.set_maxeval(50);
-    //     opt.set_initial_step(0.1);
-
-    //     auto x = std::vector(9, 0.0);
-    //     double maxval;
-
-    //     auto opt_res = opt.optimize(x, maxval);
-    //     logger(spdlog::level::info,
-    //            "found maximum in {} evaluations at f({}) = {}\n",
-    //            opt.get_numevals(),
-    //            fmt::join(x, ", "),
-    //            maxval);
-    // } else {
-    // }
+    return Runtime::start(argc, argv);
 }
