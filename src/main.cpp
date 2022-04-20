@@ -1,12 +1,9 @@
 #include <cmath>
-#include <legion.h>
-#include <nlopt.hpp>
 
-#include <vector>
+#include "driver.hpp"
 
-#include <filesystem>
-#include <fstream>
-#include <sol/sol.hpp>
+#include <fmt/core.h>
+#include <fmt/ranges.h>
 
 /*
  * Some thoughts on moving our custom mpi/coroutine systems to a Legion task based
@@ -36,8 +33,6 @@
  *
  */
 
-namespace fs = std::filesystem;
-
 using namespace Legion;
 
 Logger log_fido("fido");
@@ -45,6 +40,7 @@ Logger log_fido("fido");
 enum TaskIDs {
     TOP_LEVEL_TASK_ID,
     TOP_LEVEL_NLOPT_TASK_ID,
+    SIMULATION_TASK_ID,
 };
 
 void top_level_task(const Task* task,
@@ -53,49 +49,67 @@ void top_level_task(const Task* task,
                     Runtime* runtime)
 {
     log_fido.print("top_level...");
+
     // parse input and decide how many nlopt tasks to file up
     int n = 1;
 
-    auto sz = fs::file_size("input.lua");
-    auto total_sz = sz + sizeof(int) + 1;
-    void* task_buf = new char[total_sz];
-    char* file_buf = (char*)(task_buf) + sizeof(int);
-    std::ifstream is{"input.lua"};
-    is.read(file_buf, sz);
-    file_buf[sz] = '\0';
+    // something like:
+    auto d = driver("input.lua");
 
     // fire off a bunch of top-level-nlopt tasks
     for (int i = 0; i < n; i++) {
-        *((int*)task_buf) = i;
-        TaskLauncher l(TOP_LEVEL_NLOPT_TASK_ID, TaskArgument(task_buf, total_sz));
+        //*((int*)task_buf) = i;
+        // can we instead do
+        // TaskLauncher l(TOP_LEVEL_NLOPT_TASK_ID, interface);
+        // where we have provided a conversion operator?
+        TaskLauncher l(TOP_LEVEL_NLOPT_TASK_ID, d);
         runtime->execute_task(ctx, l);
+
+        // or should this be an index launch?
     }
 }
 
-struct my_constraint_data {
-    double a, b;
+struct objective_data {
+    driver_span& dr;
+    const Task* task;
+    const std::vector<PhysicalRegion>& regions;
+    Context& ctx;
+    Runtime* runtime;
 };
 
-double myfunc(unsigned n, const double* x, double* grad, void* my_func_data)
+double objective(unsigned n, const double* x, double* grad, void* data)
 {
-    if (grad) {
-        grad[0] = 0.0;
-        grad[1] = 0.5 / std::sqrt(x[1]);
-    }
+    auto& obj_d = *reinterpret_cast<objective_data*>(data);
+    auto&& [dr, task, regions, ctx, runtime] = obj_d;
 
-    return std::sqrt(x[1]);
-}
+    std::span<const double> params{x, n};
 
-double my_constraint(unsigned n, const double* x, double* grad, void* data)
-{
-    my_constraint_data& d = *(my_constraint_data*)data;
-    auto&& [a, b] = d;
+    log_fido.print(
+        fmt::format("running objective with params: {}", fmt::join(params, ", "))
+            .c_str());
 
-    if (grad) {
-        grad[0] = 3 * a * (a * x[0] + b) * (a * x[0] + b);
-        grad[1] = -1;
-    }
-    return (a * x[0] + b) * (a * x[0] + b) * (a * x[0] + b) - x[1];
+    log_fido.print("task arglen %lu", task->arglen);
+
+    // need to update dr with the alphas
+    dr.set_data(params);
+
+    // get the number of things to run and launch an index task
+    Rect<1> launch_bounds(0, dr.simulation_size() - 1);
+
+    ArgumentMap arg_map;
+    for (int i = 0; i < dr.simulation_size(); i++) arg_map.set_point(i, dr);
+
+    IndexTaskLauncher index_launcher(
+        SIMULATION_TASK_ID, launch_bounds, TaskArgument(NULL, 0), arg_map);
+
+    FutureMap fm = runtime->execute_index_space(ctx, index_launcher);
+    fm.wait_all_results();
+
+    std::vector<double> res(dr.simulation_size());
+    for (int i = 0; i < dr.simulation_size(); i++)
+        res[i] = fm.get_result<double>(i);
+
+    return dr.result(res);
 }
 
 void top_level_nlopt_task(const Task* task,
@@ -105,37 +119,18 @@ void top_level_nlopt_task(const Task* task,
 {
     // assert(task->arglen == sizeof(int));
     int n = *(const int*)task->args;
-    const char* buf = (const char*)task->args + sizeof(int);
     log_fido.print("top-level-nlopt task %d", n);
 
-    sol::state lua{};
-    lua.open_libraries(
-        sol::lib::base, sol::lib::string, sol::lib::package, sol::lib::math);
-    lua.safe_script(buf);
+    // here we would maybe do something like
+    auto dr = driver::from_task(task);
+    auto opt = dr.opt(log_fido);
+    auto x = dr.guess();
 
-    // would this be the right place to "serialize" the input (maybe into a bunch of json
-    // strings) which could be passed as an extra argument to the nlopt optimize function.
-    // That function would then create the index spaces and do a bunch of index launches
-    // for the simulation runs.  The results of the simulations would be processed via a
-    // reduction task.  And those would be further processed via reduction
-    // Each index space with a series of input parameters would also need a corresponding
-    // output region.  There would need to be some kind of non-overlapping way of doing
-    // the output region
+    objective_data obj_d{dr, task, regions, ctx, runtime};
 
-    // initialize nlopt options
+    opt.set_max_objective(objective, &obj_d);
 
-    std::vector<double> lb = {-HUGE_VAL, 0}; /* lower bounds */
-    nlopt::opt opt{nlopt::LD_MMA, 2};
-    opt.set_lower_bounds(lb);
-    opt.set_min_objective(myfunc, NULL);
-    std::vector<my_constraint_data> d{{2, 0}, {-1, 1}};
-    opt.add_inequality_constraint(my_constraint, &d[0], 1.0e-8);
-    opt.add_inequality_constraint(my_constraint, &d[1], 1.0e-8);
-    opt.set_xtol_rel(1e-4);
-
-    std::vector x = {1.234, 5.678};
     double maxval;
-
     auto opt_res = opt.optimize(x, maxval);
 
     log_fido.print("task %d found maximum in %d evaluations at f(%g, %g) = %g",
@@ -150,31 +145,20 @@ void top_level_nlopt_task(const Task* task,
     // when we are done optimizing, recursively launch this task
 }
 
-// double objective(unsigned n, const double* x, double*, void* data)
-// {
-//     sol::table& tbl = *reinterpret_cast<sol::table*>(data);
+double simulation_task(const Task* task,
+                       const std::vector<PhysicalRegion>& regions,
+                       Context ctx,
+                       Runtime* runtime)
+{
+    auto dr = driver::from_task(task);
+    auto x = dr.params();
 
-//     {
-//         auto rng = std::span<const double>(x, n);
-//         spdlog::info("running objective with params: {}", fmt::join(rng, ", "));
-//     }
-
-//     double max_time = tbl["step_controller"]["max_time"];
-//     for (unsigned i = 0; i < n; i++) { tbl["scheme"]["alpha"][i + 1] = x[i]; }
-
-//     auto result = ccs::simulation_run(tbl);
-//     assert(result);
-
-//     auto&& [time, error, _] = *result;
-
-//     tbl["constraint"] = max_time - time;
-
-//     if (time < max_time) {
-//         return 10 * time / max_time;
-//     } else {
-//         return 10 - std::log(error);
-//     }
-// }
+    log_fido.print(fmt::format("running simulation task {}: with params {}",
+                               task->index_point.point_data[0],
+                               fmt::join(x, ", "))
+                       .c_str());
+    return dr.run(task->index_point.point_data[0]);
+}
 
 int main(int argc, char* argv[])
 {
@@ -188,6 +172,13 @@ int main(int argc, char* argv[])
         TaskVariantRegistrar r(TOP_LEVEL_NLOPT_TASK_ID, "top_level_nlopt");
         r.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
         Runtime::preregister_task_variant<top_level_nlopt_task>(r, "top_level_nlopt");
+    }
+
+    {
+        TaskVariantRegistrar r(SIMULATION_TASK_ID, "simulation");
+        r.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        r.set_leaf();
+        Runtime::preregister_task_variant<double, simulation_task>(r, "simulation");
     }
 
     return Runtime::start(argc, argv);
