@@ -189,7 +189,11 @@ local wave_simulation = {
    end
 }
 Simulations = {
-   wave_simulation
+   wave_simulation,
+
+   aggregate = function(self, lst)
+      return lst[1]
+   end,
 }
 
 Constraints = {

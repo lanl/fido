@@ -78,10 +78,13 @@ public:
 
     static driver_<std::span<std::byte>> from_task(const Legion::Task* task)
     {
-        if (task->local_arglen > 0)
-            return {(std::byte*)task->local_args, task->local_arglen};
-        else
-            return {(std::byte*)task->args, task->arglen};
+        return {(std::byte*)task->args, task->arglen};
+    }
+
+    static driver_<std::span<std::byte>> from_task(int& i, const Legion::Task* task)
+    {
+        i = *((const int*)task->args);
+        return {(std::byte*)task->local_args, task->local_arglen};
     }
 
     nlopt::opt opt(Legion::Logger& log)
@@ -127,10 +130,10 @@ public:
         return x;
     }
 
-    double run(int i)
+    double run(int idx, int i)
     {
         auto& lua = lua_state();
-        sol::table t = lua["Simulations"][1];
+        sol::table t = lua["Simulations"][idx + 1];
         sol::function set_values = t["set_values"];
         sol::function result = t["result"];
         auto x = params();
@@ -163,7 +166,14 @@ public:
     double result(std::span<const double> res)
     {
         auto& lua = lua_state();
-        sol::table t = lua["Simulations"][1];
+        sol::table t = lua["Simulations"];
+        return t["aggregate"](t, res);
+    }
+
+    double result(int i, std::span<const double> res)
+    {
+        auto& lua = lua_state();
+        sol::table t = lua["Simulations"][i + 1];
         return t["aggregate"](t, res);
     }
 
@@ -171,7 +181,16 @@ public:
     {
         auto& lua = lua_state();
         // really need to abstract this
-        sol::table t = lua["Simulations"][1]["simulations"];
+        sol::table t = lua["Simulations"];
+        assert(t.valid());
+        return t.size();
+    }
+
+    int simulation_size(int i)
+    {
+        auto& lua = lua_state();
+        // really need to abstract this
+        sol::table t = lua["Simulations"][i + 1]["simulations"];
         assert(t.valid());
         return t.size();
     }

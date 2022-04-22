@@ -80,6 +80,11 @@ void top_level_task(const Task* task,
     }
 }
 
+//
+// Need to package up our input data and legion specific data so we can launch
+// a bunch of simulation tasks from the objective function.  Note that the objective
+// function will be called by indirectly via nlopt rather than directly by us
+//
 struct objective_data {
     driver_span& dr;
     const Task* task;
@@ -98,20 +103,38 @@ double objective(unsigned n, const double* x, double* grad, void* data)
     // need to update dr with the alphas
     dr.set_data(params);
 
-    // get the number of things to run and launch an index task
-    Rect<1> launch_bounds(0, dr.simulation_size() - 1);
+    // get the outer number of things to run and launch an index task
+    auto sz = dr.simulation_size();
 
-    ArgumentMap arg_map;
-    for (int i = 0; i < dr.simulation_size(); i++) arg_map.set_point(i, dr);
+    // launch all tasks and collect futures
+    std::vector<FutureMap> fm;
+    fm.reserve(sz);
 
-    IndexTaskLauncher index_launcher(
-        SIMULATION_TASK_ID, launch_bounds, TaskArgument(NULL, 0), arg_map);
+    for (int i = 0; i < sz; i++) {
+        Rect<1> launch_bounds(0, dr.simulation_size(i) - 1);
 
-    FutureMap fm = runtime->execute_index_space(ctx, index_launcher);
-    fm.wait_all_results();
+        // probably doesn't make much sense to do an argmap with the same data to every
+        // task
+        ArgumentMap arg_map;
+        for (int j = 0; j < dr.simulation_size(i); j++) arg_map.set_point(j, dr);
 
-    std::vector<double> res(dr.simulation_size());
-    for (int i = 0; i < dr.simulation_size(); i++) res[i] = fm.get_result<double>(i);
+        IndexTaskLauncher index_launcher(
+            SIMULATION_TASK_ID, launch_bounds, TaskArgument(&i, sizeof(int)), arg_map);
+
+        fm.push_back(runtime->execute_index_space(ctx, index_launcher));
+    }
+
+    // process all tasks
+    std::vector<double> res;
+    res.reserve(sz);
+    for (int i = 0; i < sz; i++) {
+        std::vector<double> local_res(dr.simulation_size(i));
+
+        for (int j = 0; j < dr.simulation_size(i); j++)
+            local_res[j] = fm[i].get_result<double>(j);
+
+        res.push_back(dr.result(i, local_res));
+    }
 
     double result = dr.result(res);
     log_fido.print(fmt::format("objective with params: {}\n>>> result: {}",
@@ -121,6 +144,9 @@ double objective(unsigned n, const double* x, double* grad, void* data)
     return result;
 }
 
+//
+// Serial constraint function called directly from the top-level-nlopt task
+//
 double constraint(unsigned n, const double* x, double*, void* data)
 {
     auto& obj_d = *reinterpret_cast<objective_data*>(data);
@@ -133,13 +159,12 @@ double constraint(unsigned n, const double* x, double*, void* data)
 
     // do in serial for now since the eigenvalue calculations are fast
     double result = dr.constraint();
-    log_fido.print(fmt::format("constraint with params: {}\n>>> result: {}",
-                               fmt::join(params, ", "),
-                               result)
-                       .c_str());
     return result;
 }
 
+//
+//
+//
 void top_level_nlopt_task(const Task* task,
                           const std::vector<PhysicalRegion>& regions,
                           Context ctx,
@@ -170,15 +195,17 @@ void top_level_nlopt_task(const Task* task,
                        .c_str());
 }
 
+//
+// Leaf task which runs the simulation and returns the results to the nlopt driver
+//
 double simulation_task(const Task* task,
                        const std::vector<PhysicalRegion>& regions,
                        Context ctx,
                        Runtime* runtime)
 {
-    auto dr = driver::from_task(task);
-    auto x = dr.params();
-
-    return dr.run(task->index_point.point_data[0]);
+    int idx;
+    auto dr = driver::from_task(idx, task);
+    return dr.run(idx, task->index_point.point_data[0]);
 }
 
 int main(int argc, char* argv[])
