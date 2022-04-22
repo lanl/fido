@@ -141,7 +141,27 @@ public:
         return result(t, *r);
     }
 
-    double result(std::span<const double> res) {
+    double constraint()
+    {
+        auto& lua = lua_state();
+        sol::table t = lua["Constraints"][1];
+
+        sol::function set_values = t["set_values"];
+        sol::function result = t["result"];
+        sol::table sims = t["simulations"];
+
+        auto x = params();
+        std::vector<double> r(sims.size());
+
+        for (int i = 0; i < sims.size(); i++) {
+            set_values(t, i + 1, x);
+            r[i] = result(t, *ccs::simulation_run(sims[i + 1]));
+        }
+        return t["aggregate"](t, r);
+    }
+
+    double result(std::span<const double> res)
+    {
         auto& lua = lua_state();
         sol::table t = lua["Simulations"][1];
         return t["aggregate"](t, res);

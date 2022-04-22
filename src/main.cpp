@@ -84,12 +84,6 @@ double objective(unsigned n, const double* x, double* grad, void* data)
 
     std::span<const double> params{x, n};
 
-    log_fido.print(
-        fmt::format("running objective with params: {}", fmt::join(params, ", "))
-            .c_str());
-
-    log_fido.print("task arglen %lu", task->arglen);
-
     // need to update dr with the alphas
     dr.set_data(params);
 
@@ -106,10 +100,33 @@ double objective(unsigned n, const double* x, double* grad, void* data)
     fm.wait_all_results();
 
     std::vector<double> res(dr.simulation_size());
-    for (int i = 0; i < dr.simulation_size(); i++)
-        res[i] = fm.get_result<double>(i);
+    for (int i = 0; i < dr.simulation_size(); i++) res[i] = fm.get_result<double>(i);
 
-    return dr.result(res);
+    double result = dr.result(res);
+    log_fido.print(fmt::format("objective with params: {}\n>>> result: {}",
+                               fmt::join(params, ", "),
+                               result)
+                       .c_str());
+    return result;
+}
+
+double constraint(unsigned n, const double* x, double*, void* data)
+{
+    auto& obj_d = *reinterpret_cast<objective_data*>(data);
+    auto& dr = obj_d.dr;
+
+    std::span<const double> params{x, n};
+
+    // need to update dr with the alphas
+    dr.set_data(params);
+
+    // do in serial for now since the eigenvalue calculations are fast
+    double result = dr.constraint();
+    log_fido.print(fmt::format("constraint with params: {}\n>>> result: {}",
+                               fmt::join(params, ", "),
+                               result)
+                       .c_str());
+    return result;
 }
 
 void top_level_nlopt_task(const Task* task,
@@ -129,20 +146,17 @@ void top_level_nlopt_task(const Task* task,
     objective_data obj_d{dr, task, regions, ctx, runtime};
 
     opt.set_max_objective(objective, &obj_d);
+    opt.add_inequality_constraint(constraint, &obj_d, 0.0);
 
     double maxval;
     auto opt_res = opt.optimize(x, maxval);
 
-    log_fido.print("task %d found maximum in %d evaluations at f(%g, %g) = %g",
-                   n,
-                   opt.get_numevals(),
-                   x[0],
-                   x[1],
-                   maxval);
-
-    // call nlopt.optimize
-    // thee objective we pass to nlopt will launch a bunch of other tasks
-    // when we are done optimizing, recursively launch this task
+    log_fido.print(fmt::format("task {} found maximum in {} evaluations at\n f({}) = {}",
+                               n,
+                               opt.get_numevals(),
+                               fmt::join(x, ", "),
+                               maxval)
+                       .c_str());
 }
 
 double simulation_task(const Task* task,
@@ -153,10 +167,6 @@ double simulation_task(const Task* task,
     auto dr = driver::from_task(task);
     auto x = dr.params();
 
-    log_fido.print(fmt::format("running simulation task {}: with params {}",
-                               task->index_point.point_data[0],
-                               fmt::join(x, ", "))
-                       .c_str());
     return dr.run(task->index_point.point_data[0]);
 }
 
