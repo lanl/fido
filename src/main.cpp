@@ -67,17 +67,10 @@ void top_level_task(const Task* task,
 
     auto d = driver(input_file);
 
-    // fire off a bunch of top-level-nlopt tasks
-    for (int i = 0; i < n; i++) {
-        //*((int*)task_buf) = i;
-        // can we instead do
-        // TaskLauncher l(TOP_LEVEL_NLOPT_TASK_ID, interface);
-        // where we have provided a conversion operator?
-        TaskLauncher l(TOP_LEVEL_NLOPT_TASK_ID, d);
-        runtime->execute_task(ctx, l);
-
-        // or should this be an index launch?
-    }
+    Rect<1> launch_bounds(0, n - 1);
+    ArgumentMap arg_map;
+    IndexTaskLauncher index_launcher(TOP_LEVEL_NLOPT_TASK_ID, launch_bounds, d, arg_map);
+    runtime->execute_index_space(ctx, index_launcher);
 }
 
 //
@@ -128,6 +121,7 @@ double objective(unsigned n, const double* x, double* grad, void* data)
     std::vector<double> res;
     res.reserve(sz);
     for (int i = 0; i < sz; i++) {
+        fm[i].wait_all_results();
         std::vector<double> local_res(dr.simulation_size(i));
 
         for (int j = 0; j < dr.simulation_size(i); j++)

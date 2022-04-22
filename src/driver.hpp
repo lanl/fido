@@ -8,6 +8,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <random>
+
 #include <sol/sol.hpp>
 
 #include <legion.h>
@@ -121,7 +123,16 @@ public:
         memcpy(dims_data(), x.data(), x.size_bytes());
     }
 
-    std::vector<double> guess() { return std::vector<double>(opt_dims()); }
+    std::vector<double> guess()
+    {
+        std::default_random_engine u{};
+        std::random_device rd{};
+        u.seed(rd());
+        std::uniform_real_distribution<> d{-1.0, 1.0};
+        auto v = std::vector<double>(opt_dims());
+        for (auto&& x : v) x = d(u);
+        return v;
+    }
     std::vector<double> params()
     {
         int dims = opt_dims();
