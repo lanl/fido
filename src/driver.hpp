@@ -19,6 +19,7 @@
 #include <shoccs.hpp>
 
 static_assert(sizeof(std::byte) == sizeof(char));
+static_assert(2 * sizeof(int) <= sizeof(double));
 
 namespace fs = std::filesystem;
 
@@ -38,6 +39,7 @@ class driver_
     }
 
     int opt_dims() const { return *(const int*)buf.data(); }
+    int task_index_() { return *((int*)buf.data() + 1); }
 
     double* dims_data() { return (double*)buf.data() + 1; }
 
@@ -80,7 +82,10 @@ public:
 
     static driver_<std::span<std::byte>> from_task(const Legion::Task* task)
     {
-        return {(std::byte*)task->args, task->arglen};
+        if (task->local_arglen > task->arglen)
+            return {(std::byte*)task->local_args, task->local_arglen};
+        else
+            return {(std::byte*)task->args, task->arglen};
     }
 
     static driver_<std::span<std::byte>> from_task(int& i, const Legion::Task* task)
@@ -122,6 +127,8 @@ public:
     {
         memcpy(dims_data(), x.data(), x.size_bytes());
     }
+
+    int& task_index() { return *((int*)buf.data() + 1); }
 
     std::vector<double> guess()
     {
@@ -204,6 +211,12 @@ public:
         sol::table t = lua["Simulations"][i + 1]["simulations"];
         assert(t.valid());
         return t.size();
+    }
+
+    bool accept(double v) {
+        auto& lua = lua_state();
+        sol::table t = lua["Simulations"];
+        return t["accept"](t, v);
     }
 
     operator Legion::TaskArgument() const { return {buf.data(), buf.size()}; }

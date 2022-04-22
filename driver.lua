@@ -194,6 +194,10 @@ Simulations = {
    aggregate = function(self, lst)
       return lst[1]
    end,
+
+   accept = function(self, v)
+      return v > 21;
+   end
 }
 
 Constraints = {

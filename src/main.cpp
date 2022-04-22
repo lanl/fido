@@ -4,6 +4,7 @@
 
 #include <fmt/core.h>
 #include <fmt/ranges.h>
+#include <fstream>
 #include <string_view>
 
 /*
@@ -67,9 +68,15 @@ void top_level_task(const Task* task,
 
     auto d = driver(input_file);
 
+    // need to pass a unique task index for solution logging
     Rect<1> launch_bounds(0, n - 1);
     ArgumentMap arg_map;
-    IndexTaskLauncher index_launcher(TOP_LEVEL_NLOPT_TASK_ID, launch_bounds, d, arg_map);
+    for (int j = 0; j < n; j++) {
+        d.task_index() = j;
+        arg_map.set_point(j, d);
+    }
+    IndexTaskLauncher index_launcher(
+        TOP_LEVEL_NLOPT_TASK_ID, launch_bounds, TaskArgument(NULL, 0), arg_map);
     runtime->execute_index_space(ctx, index_launcher);
 }
 
@@ -131,7 +138,7 @@ double objective(unsigned n, const double* x, double* grad, void* data)
     }
 
     double result = dr.result(res);
-    log_fido.print(fmt::format("objective with params: {}\n>>> result: {}",
+    log_fido.debug(fmt::format("objective with params: {}\n>>> result: {}",
                                fmt::join(params, ", "),
                                result)
                        .c_str());
@@ -164,12 +171,12 @@ void top_level_nlopt_task(const Task* task,
                           Context ctx,
                           Runtime* runtime)
 {
-    // assert(task->arglen == sizeof(int));
-    int n = *(const int*)task->args;
+
+    auto dr = driver::from_task(task);
+
+    int n = dr.task_index();
     log_fido.print("top-level-nlopt task %d", n);
 
-    // here we would maybe do something like
-    auto dr = driver::from_task(task);
     auto opt = dr.opt(log_fido);
     auto x = dr.guess();
 
@@ -179,9 +186,17 @@ void top_level_nlopt_task(const Task* task,
     opt.add_inequality_constraint(constraint, &obj_d, 0.0);
 
     double maxval;
-    auto opt_res = opt.optimize(x, maxval);
+    opt.optimize(x, maxval);
 
-    log_fido.print(fmt::format("task {} found maximum in {} evaluations at\n f({}) = {}",
+    std::string file = dr.accept(maxval) ? fmt::format("success.{:06d}", n)
+                                         : fmt::format("fail.{:06d}", n);
+
+    std::ofstream out{file, std::ios::binary | std::ios::app};
+    out.write(reinterpret_cast<const char*>(x.data()), x.size() * sizeof(double));
+    out.write(reinterpret_cast<const char*>(&maxval), sizeof(maxval));
+    out.close();
+
+    log_fido.debug(fmt::format("task {} found maximum in {} evaluations at\n f({}) = {}",
                                n,
                                opt.get_numevals(),
                                fmt::join(x, ", "),
