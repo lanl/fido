@@ -175,7 +175,7 @@ void top_level_nlopt_task(const Task* task,
     auto dr = driver::from_task(task);
 
     int n = dr.task_index();
-    log_fido.print("top-level-nlopt task %d", n);
+    log_fido.debug("top-level-nlopt task %d", n);
 
     auto opt = dr.opt(log_fido);
     auto x = dr.guess();
@@ -186,8 +186,10 @@ void top_level_nlopt_task(const Task* task,
     opt.add_inequality_constraint(constraint, &obj_d, 0.0);
 
     double maxval;
+    // nlopt will call the objective and constraint functions
     opt.optimize(x, maxval);
 
+    // log results to appropriate file
     std::string file = dr.accept(maxval) ? fmt::format("success.{:06d}", n)
                                          : fmt::format("fail.{:06d}", n);
 
@@ -202,6 +204,13 @@ void top_level_nlopt_task(const Task* task,
                                fmt::join(x, ", "),
                                maxval)
                        .c_str());
+
+    // launch another task if time permits
+    if (Realm::Clock::current_time() < dr.time_limit()) {
+        dr.task_index() = n;
+        TaskLauncher launcher(TOP_LEVEL_NLOPT_TASK_ID, dr);
+        runtime->execute_task(ctx, launcher);
+    }
 }
 
 //

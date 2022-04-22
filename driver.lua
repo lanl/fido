@@ -5,7 +5,7 @@ NLopt = {
    xtol_rel = 1e-5,
    xtol_abs = 1e-8,
    maxeval = 50,
-   initial_step = 0.1
+   initial_step = 0.1,
 }
 
 local DIMS = NLopt.dims
@@ -203,3 +203,6 @@ Simulations = {
 Constraints = {
    eigenvalue_constraint
 }
+
+-- extra parameters
+wallclock_hours = 5 / 60

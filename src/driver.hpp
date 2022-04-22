@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -217,6 +218,14 @@ public:
         auto& lua = lua_state();
         sol::table t = lua["Simulations"];
         return t["accept"](t, v);
+    }
+
+    double time_limit() {
+        auto& lua = lua_state();
+        sol::optional<double> t = lua["wallclock_hours"];
+        // convert hours to seconds for comparison with Realm::Clock
+        return t ? *t * 3600 : std::numeric_limits<double>::max();
+
     }
 
     operator Legion::TaskArgument() const { return {buf.data(), buf.size()}; }
