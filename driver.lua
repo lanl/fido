@@ -141,7 +141,7 @@ local eigenvalue_constraint = {
       end
    end,
    result = function(self, lst)
-      return lst[1]
+      return lst[2]
    end,
    aggregate = function(self, lst)
       local result = -math.huge
@@ -154,8 +154,8 @@ local eigenvalue_constraint = {
 
 local wave_simulation = {
    simulations = add_entries(
-      add_entries(add_entries(wave_base, {51, 71, 91, 111}, "mesh", "index_extents", 1), psi_values, "shapes", 1, "psi"),
-      {1.0, 0.5, 0.01},
+      add_entries(add_entries(wave_base, {51, 71}, "mesh", "index_extents", 1), psi_values, "shapes", 1, "psi"),
+      {1.0, 0.5},
       "step_controller",
       "cfl",
       "hyperbolic"
@@ -174,7 +174,6 @@ local wave_simulation = {
    result = function(self, lst)
       -- lst = {time, error, ...}
       local max_time = wave_base[1].step_controller.max_time
-      -- print("max_time/lst[1]/lst[2]", max_time, lst[1], lst[2])
       if lst[1] < max_time then
          return 20.0 * lst[1] / max_time
       else

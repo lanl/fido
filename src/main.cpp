@@ -4,6 +4,7 @@
 
 #include <fmt/core.h>
 #include <fmt/ranges.h>
+#include <string_view>
 
 /*
  * Some thoughts on moving our custom mpi/coroutine systems to a Legion task based
@@ -51,10 +52,20 @@ void top_level_task(const Task* task,
     log_fido.print("top_level...");
 
     // parse input and decide how many nlopt tasks to file up
+    std::string input_file = "input.lua";
     int n = 1;
 
-    // something like:
-    auto d = driver("input.lua");
+    // This is how the legion examples parse input... I hate this.
+    const InputArgs& args = Runtime::get_input_args();
+    for (int i = 1; i < args.argc; i++) {
+        if (!strcmp(args.argv[i], "-n")) n = atoi(args.argv[++i]);
+        if (args.argv[i][0] != '-') {
+            std::string_view file_arg{args.argv[i]};
+            if (file_arg.ends_with(std::string_view(".lua"))) input_file = file_arg;
+        }
+    }
+
+    auto d = driver(input_file);
 
     // fire off a bunch of top-level-nlopt tasks
     for (int i = 0; i < n; i++) {
