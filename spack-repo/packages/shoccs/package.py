@@ -43,7 +43,7 @@ class Shoccs(CMakePackage):
     depends_on('spdlog@1.9:')
     depends_on('cxxopts@3:')
     depends_on('boost cxxstd=2a')
-    depends_on('intel-mkl')
+    depends_on('mkl')
     depends_on('catch2@3:')
 
     def cmake_args(self):
