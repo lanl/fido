@@ -25,16 +25,7 @@ find_package(Legion REQUIRED)
 
 find_package(shoccs REQUIRED)
 find_package(sol2 REQUIRED)
-#find_package(range-v3 REQUIRED)
-#find_package(pugixml 1.10 REQUIRED)
-#find_package(spdlog 1.9 REQUIRED)
-#find_package(cxxopts REQUIRED)
-#find_package(Boost REQUIRED) # for header only mp11
-#find_package(MKL REQUIRED)
-#find_package(MPI REQUIRED)
 
 include(GNUInstallDirs)
 
-
-add_subdirectory(docs)
 add_subdirectory(src)
