@@ -1,5 +1,6 @@
 build
+install
 envsetup.sh
 .vscode
-configure
+configure*
 __pycache__

@@ -28,4 +28,9 @@ find_package(sol2 REQUIRED)
 
 include(GNUInstallDirs)
 
+if(NOT APPLE)
+    set(CMAKE_INSTALL_RPATH $ORIGIN)
+endif()
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 add_subdirectory(src)
