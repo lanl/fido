@@ -1,14 +1,20 @@
+local floating_dims = 6
+local dirichlet_dims = 3
+local DIMS = floating_dims + dirichlet_dims
+local uniform = 1 - 1e-8
+
 -- parameters for driving nlopt
+
 NLopt = {
    algorithm = "LN_COBYLA",
-   dims = 9,
+   dims = DIMS,
    xtol_rel = 1e-5,
    xtol_abs = 1e-8,
    maxeval = 100,
    initial_step = 0.1,
 }
 
-local DIMS = NLopt.dims
+
 
 -- base tables for eigenvalue constraints and simulation base objective
 local eigenvalue_base = {
@@ -18,25 +24,27 @@ local eigenvalue_base = {
          index_extents = {21},
          domain_bounds = {1}
       },
+
       shapes = {
          {
             type = "yz_rect",
-            psi = 1-1e-6, --0.001,
+            psi = uniform,
             normal = 1,
             boundary_condition = "dirichlet"
          },
          {
             type = "yz_rect",
-            psi = 1 - 1e-6, --0.9,
+            psi = uniform,
             normal = -1,
             boundary_condition = "floating"
          }
       },
+
       scheme = {
          order = 1,
          type = "E2-poly",
-         floating_alpha = {13 / 100, 7 / 50, 3 / 20, 4 / 25, 17 / 100, 9 / 50},
-         dirichlet_alpha = {3 / 25, 13 / 100, 7 / 50}
+         floating_alpha = {},
+         dirichlet_alpha = {}
       },
       system = {
          type = "eigenvalues"
@@ -44,7 +52,7 @@ local eigenvalue_base = {
    }
 }
 
-local wave_base = {
+local wave_base_1d = {
    {
       logging = false,
       mesh = {
@@ -54,18 +62,9 @@ local wave_base = {
       domain_boundaries = {
          xmin = "dirichlet"
       },
-      shapes = {
-         {
-            type = "yz_rect",
-            psi = 1 - 1e-6, --0.99,
-            normal = 1,
-            boundary_condition = "dirichlet"
-         }
-      },
       scheme = {
          order = 1,
          type = "E2-poly",
-         --alpha = {}
          floating_alpha = {},
          dirichlet_alpha = {}
       },
@@ -79,8 +78,43 @@ local wave_base = {
          type = "rk4"
       },
       step_controller = {
-         max_time = 500,
-         --max_step = 2,
+         max_time = 50,
+         cfl = {
+            hyperbolic = 0.8
+         }
+      }
+   }
+}
+
+
+local wave_base_2d = {
+   {
+      logging = false,
+      mesh = {
+         index_extents = {51, 51},
+         domain_bounds = {2, 2}
+      },
+      domain_boundaries = {
+         xmin = "dirichlet",
+         ymin = "dirichlet"
+      },
+      scheme = {
+         order = 1,
+         type = "E2-poly",
+         floating_alpha = {},
+         dirichlet_alpha = {}
+      },
+      system = {
+         type = "scalar wave",
+         center = {-1},
+         radius = 0,
+         max_error = 2.0
+      },
+      integrator = {
+         type = "rk4"
+      },
+      step_controller = {
+         max_time = 50,
          cfl = {
             hyperbolic = 0.8
          }
@@ -119,6 +153,19 @@ local function add_entries(tbl, vs, ...)
    return out
 end
 
+
+-- will be reusing this function in our tables
+local function set_values (self, i, lst)
+   assert(#lst >= DIMS)
+   local s = self.simulations[i].scheme
+   for j = 1, floating_dims do
+      s.floating_alpha[j] = lst[j]
+   end
+   for j = 1, dirichlet_dims do
+      s.dirichlet_alpha[j] = lst[j + floating_dims]
+   end
+end
+
 -- only add a bunch of psi constraints on the left boundary since we're only
 local eigenvalue_constraint = {
    simulations = add_entries(
@@ -127,16 +174,7 @@ local eigenvalue_constraint = {
       "mesh",
       "index_extents",
       1),
-   set_values = function(self, i, lst)
-      assert(#lst >= DIMS)
-      local s = self.simulations[i].scheme
-      for j = 1, 6 do
-         s.floating_alpha[j] = lst[j]
-      end
-      for j = 1, 3 do
-         s.dirichlet_alpha[j] = lst[j + 6]
-      end
-   end,
+   set_values = set_values,
    result = function(self, lst)
       return lst[2]
    end,
@@ -149,28 +187,19 @@ local eigenvalue_constraint = {
    end
 }
 
-local wave_simulation = {
+local wave_1d = {
    simulations = add_entries(
-      add_entries(wave_base, {51, 61, 71, 81, 91, 101}, "mesh", "index_extents", 1),
+      add_entries(wave_base_1d, {51, 61, 71, 81, 91, 101}, "mesh", "index_extents", 1),
       {0.01, 0.1, 0.8},
       "step_controller",
       "cfl",
       "hyperbolic"
    ),
    --simulations = add_entries(wave_base, {51, 71, 91}, "mesh", "index_extents", 1),
-   set_values = function(self, i, lst)
-      assert(#lst >= DIMS)
-      local s = self.simulations[i].scheme
-      for j = 1, 6 do
-         s.floating_alpha[j] = lst[j]
-      end
-      for j = 1, 3 do
-         s.dirichlet_alpha[j] = lst[j + 6]
-      end
-   end,
+   set_values = set_values,
    result = function(self, lst)
       -- lst = {time, error, ...}
-      local max_time = wave_base[1].step_controller.max_time
+      local max_time = wave_base_1d[1].step_controller.max_time
       if lst[1] < max_time then
          return 20.0 * lst[1] / max_time
       else
@@ -185,11 +214,44 @@ local wave_simulation = {
       return math.sqrt(result / #lst)
    end
 }
+
+local wave_2d = {
+   simulations = add_entries(
+      add_entries(wave_base_2d, { {91, 91}, {71, 71}, {51, 51}}, "mesh", "index_extents"),
+      {0.8, 0.05},
+      "step_controller",
+      "cfl",
+      "hyperbolic"
+   ),
+   set_values = set_values,
+   result = function(self, lst)
+      -- lst = {time, error, ...}
+      local max_time = wave_base_2d[1].step_controller.max_time
+      if lst[1] < max_time then
+         return 20.0 * lst[1] / max_time
+      else
+         return 20.0 - math.log(lst[2])
+      end
+   end,
+   aggregate = function(self, lst)
+      local result = 0.0
+      for _, v in ipairs(lst) do
+         result = result + v * v
+      end
+      return math.sqrt(result / #lst)
+   end
+}
+
 Simulations = {
-   wave_simulation,
+   wave_1d,
+   wave_2d,
 
    aggregate = function(self, lst)
-      return lst[1]
+      local result = 0.0
+      for _, v in ipairs(lst) do
+         result = result + v * v
+      end
+      return math.sqrt(result / #lst)
    end,
 
    accept = function(self, v)
