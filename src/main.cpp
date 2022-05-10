@@ -138,10 +138,16 @@ double objective(unsigned n, const double* x, double* grad, void* data)
     }
 
     double result = dr.result(res);
-    log_fido.debug(fmt::format("objective with params: {}\n>>> result: {}",
-                               fmt::join(params, ", "),
-                               result)
-                       .c_str());
+    if (dr.accept(result))
+        log_fido.print(fmt::format("objective with params: {}\n>>> result: {}",
+                                   fmt::join(params, ", "),
+                                   result)
+                           .c_str());
+    else
+        log_fido.debug(fmt::format("objective with params: {}\n>>> result: {}",
+                                   fmt::join(params, ", "),
+                                   result)
+                           .c_str());
     return result;
 }
 
