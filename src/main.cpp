@@ -144,7 +144,7 @@ double objective(unsigned n, const double* x, double* grad, void* data)
                                    result)
                            .c_str());
     else
-        log_fido.debug(fmt::format("objective with params: {}\n>>> result: {}",
+        log_fido.print(fmt::format("objective with params: {}\n>>> result: {}",
                                    fmt::join(params, ", "),
                                    result)
                            .c_str());

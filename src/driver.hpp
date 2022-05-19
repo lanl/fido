@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <random>
 
 #include <sol/sol.hpp>
@@ -26,6 +27,21 @@ namespace fs = std::filesystem;
 
 namespace detail
 {
+
+//
+// need to make the member function explicit rather than a template parameter
+// since the nlopt member functions form an overload set
+template <typename T>
+inline void set_opt(const sol::optional<T>& v,
+                    void (nlopt::opt::*fn)(T),
+                    nlopt::opt& o,
+                    std::optional<nlopt::opt>& local_o)
+{
+    if (v) {
+        std::invoke(fn, o, *v);
+        if (local_o) std::invoke(fn, *local_o, *v);
+    }
+}
 
 template <typename C>
 class driver_
@@ -100,6 +116,8 @@ public:
         auto& lua = lua_state();
 
         nlopt::opt opt{};
+        std::optional<nlopt::opt> local_opt{};
+
         sol::table t = lua["NLopt"];
 
         std::string algorithm = t["algorithm"];
@@ -107,19 +125,30 @@ public:
 
         if (algorithm == "LN_COBYLA") {
             opt = nlopt::opt(nlopt::LN_COBYLA, dims);
+        } else if (algorithm == "LN_SBPLX") {
+            local_opt = nlopt::opt(nlopt::LN_SBPLX, dims);
+            opt = nlopt::opt(nlopt::AUGLAG, dims);
         } else {
             log.fatal("unknown nlopt algorithm");
         }
 
         sol::optional<double> xtol_rel = t["xtol_rel"];
         sol::optional<double> xtol_abs = t["xtol_abs"];
+        sol::optional<double> ftol_rel = t["ftol_rel"];
+        sol::optional<double> ftol_abs = t["ftol_abs"];
         sol::optional<int> maxeval = t["maxeval"];
         sol::optional<double> initial_step = t["initial_step"];
 
-        if (xtol_rel) opt.set_xtol_rel(*xtol_rel);
-        if (xtol_abs) opt.set_xtol_abs(*xtol_abs);
-        if (maxeval) opt.set_maxeval(*maxeval);
-        if (initial_step) opt.set_initial_step(*initial_step);
+        // What are the implications of maxeval and initial_step for the local_opt?
+        // Will this launch a bunch of very expensive local optimizations?
+        set_opt(xtol_rel, &nlopt::opt::set_xtol_rel, opt, local_opt);
+        set_opt(xtol_abs, &nlopt::opt::set_xtol_abs, opt, local_opt);
+        set_opt(ftol_rel, &nlopt::opt::set_ftol_rel, opt, local_opt);
+        set_opt(ftol_abs, &nlopt::opt::set_ftol_abs, opt, local_opt);
+        set_opt(initial_step, &nlopt::opt::set_initial_step, opt, local_opt);
+        set_opt(maxeval, &nlopt::opt::set_maxeval, opt, local_opt);
+
+        if (local_opt) opt.set_local_optimizer(*local_opt);
 
         return opt;
     }
@@ -214,18 +243,19 @@ public:
         return t.size();
     }
 
-    bool accept(double v) {
+    bool accept(double v)
+    {
         auto& lua = lua_state();
         sol::table t = lua["Simulations"];
         return t["accept"](t, v);
     }
 
-    double time_limit() {
+    double time_limit()
+    {
         auto& lua = lua_state();
         sol::optional<double> t = lua["wallclock_hours"];
         // convert hours to seconds for comparison with Realm::Clock
         return t ? *t * 3600 : std::numeric_limits<double>::max();
-
     }
 
     operator Legion::TaskArgument() const { return {buf.data(), buf.size()}; }
