@@ -10,7 +10,7 @@ NLopt = {
    dims = 3,
    xtol_rel = 1e-5,
    xtol_abs = 1e-8,
-   maxeval = 25,
+   maxeval = 2,
    initial_step = 0.1,
    ftol_abs = 1e-2,
    ftol_rel = 1e-4
@@ -223,9 +223,9 @@ local function add_cfl (t, lst)
    return add_entries(t, lst, "step_controller", "cfl", "hyperbolic")
 end
 
-local function listify (lst)
+function listify (lst)
    local v = {}
-   for j = 1, #v do
+   for j = 1, #lst do
       v[j] = {lst[j]}
    end
    return v
